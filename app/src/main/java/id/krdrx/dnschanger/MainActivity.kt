@@ -178,6 +178,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @Composable
     private fun dnsFieldColors() = OutlinedTextFieldDefaults.colors(
         focusedTextColor = Color.White, unfocusedTextColor = Color.White,
         focusedBorderColor = Color(0xFF20C9B0), unfocusedBorderColor = Color.Gray,
