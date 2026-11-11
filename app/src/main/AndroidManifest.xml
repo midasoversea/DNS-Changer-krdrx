@@ -1,10 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="DNS Changer" android:usesCleartextTraffic="false">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="DNS Changer" android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
-        <service android:name=".DnsVpnService" android:permission="android.permission.BIND_VPN_SERVICE" android:exported="false">
+        <service android:name=".DnsVpnService" android:permission="android.permission.BIND_VPN_SERVICE" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Local VPN DNS packet forwarding" />
             <intent-filter><action android:name="android.net.VpnService"/></intent-filter>
         </service>
     </application>
