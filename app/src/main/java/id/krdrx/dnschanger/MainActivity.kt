@@ -27,7 +27,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private data class DnsOption(val name: String, val address: String, val detail: String, val custom: Boolean = false)
+private data class DnsOption(val name: String, val address: String, val detail: String, val custom: Boolean = false, val transport: String = "UDP", val host: String = "")
 
 private val builtInOptions = listOf(
     DnsOption("Cloudflare", "1.1.1.1", "DNS publik, fokus privasi"),
@@ -37,7 +37,12 @@ private val builtInOptions = listOf(
     DnsOption("Google Secondary", "8.8.4.4", "Alamat alternatif Google"),
     DnsOption("OpenDNS", "208.67.222.222", "DNS publik Cisco"),
     DnsOption("AdGuard DNS", "94.140.14.14", "Pemblokiran iklan dan pelacak"),
-    DnsOption("CleanBrowsing Family", "185.228.168.168", "Filter konten keluarga")
+    DnsOption("CleanBrowsing Family", "185.228.168.168", "Filter konten keluarga"),
+    DnsOption("Cloudflare DoT", "1.1.1.1", "DNS terenkripsi TLS", false, "DoT", "one.one.one.one"),
+    DnsOption("Google DoT", "8.8.8.8", "DNS terenkripsi TLS", false, "DoT", "dns.google"),
+    DnsOption("Quad9 DoT", "9.9.9.9", "DNS terenkripsi TLS", false, "DoT", "dns.quad9.net"),
+    DnsOption("Cloudflare DoH", "1.1.1.1", "DNS terenkripsi HTTPS", false, "DoH", "cloudflare-dns.com"),
+    DnsOption("Google DoH", "8.8.8.8", "DNS terenkripsi HTTPS", false, "DoH", "dns.google")
 )
 
 private const val PREFS = "dns_profiles"
@@ -47,7 +52,7 @@ class MainActivity : ComponentActivity() {
     private var pendingDns by mutableStateOf("1.1.1.1")
     private var connectionState by mutableStateOf(false)
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) startDns(pendingDns)
+        if (result.resultCode == Activity.RESULT_OK) startDns((builtInOptions + getSavedCustomOptions()).firstOrNull { it.address == pendingDns } ?: builtInOptions.first())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,13 +62,15 @@ class MainActivity : ComponentActivity() {
         val activeDns = prefs.getString(DnsVpnService.KEY_ACTIVE_DNS, null)
         val initialCustom = prefs.getStringSet(CUSTOM_DNS, emptySet()).orEmpty()
             .mapNotNull { entry ->
-                val parts = entry.split("|", limit = 2)
-                if (parts.size == 2 && isValidIpv4(parts[1])) DnsOption(parts[0], parts[1], "DNS tersimpan", true) else null
+                val parts = entry.split("|", limit = 4)
+                if (parts.size >= 2 && isValidIpv4(parts[1])) DnsOption(parts[0], parts[1], "DNS tersimpan", true, parts.getOrElse(2) { "UDP" }, parts.getOrElse(3) { "" }) else null
             }.sortedBy { it.name.lowercase() }
 
         setContent {
             var customOptions by remember { mutableStateOf(initialCustom) }
             var selected by remember { mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.address == activeDns } ?: builtInOptions.first()) }
+            var transport by remember { mutableStateOf(selected.transport) }
+            var dnsHost by remember { mutableStateOf(selected.host) }
             var testStatus by remember { mutableStateOf<String?>(null) }
             var testing by remember { mutableStateOf(false) }
             var dnsName by remember { mutableStateOf("") }
@@ -96,7 +103,7 @@ class MainActivity : ComponentActivity() {
                                         if (isOn) stopDns() else {
                                             pendingDns = selected.address
                                             val prepare = VpnService.prepare(this@MainActivity)
-                                            if (prepare == null) startDns(selected.address) else vpnPermission.launch(prepare)
+                                            if (prepare == null) startDns(selected) else vpnPermission.launch(prepare)
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF20C9B0)),
@@ -106,7 +113,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedButton(
-                                    onClick = { if (!testing) testDns(selected.address) { result -> testStatus = result; testing = false } .also { testing = true } },
+                                    onClick = { if (!testing) testDns(selected) { result -> testStatus = result; testing = false } .also { testing = true } },
                                     enabled = !testing,
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text(if (testing) "MENGUJI DNS..." else "UJI KONEKSI DNS") }
@@ -117,7 +124,7 @@ class MainActivity : ComponentActivity() {
                         Text("PILIH DNS", color = Color(0xFF20C9B0), fontSize = 13.sp)
                         allOptions.forEach { option ->
                             Card(
-                                onClick = { if (!isOn) { selected = option; message = null } },
+                                onClick = { if (!isOn) { selected = option; transport = option.transport; dnsHost = option.host; message = null } },
                                 colors = CardDefaults.cardColors(containerColor = if (selected.address == option.address) Color(0xFF24433F) else Color(0xFF1B2732)),
                                 shape = RoundedCornerShape(14.dp)
                             ) {
@@ -131,7 +138,7 @@ class MainActivity : ComponentActivity() {
                                         Spacer(Modifier.width(8.dp))
                                         TextButton(onClick = {
                                             customOptions = customOptions.filterNot { it.address == option.address }
-                                            prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map { "${it.name}|${it.address}" }.toSet()).apply()
+                                            prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map { "${it.name}|${it.address}|${it.transport}|${it.host}" }.toSet()).apply()
                                             if (selected.address == option.address) selected = builtInOptions.first()
                                             message = "DNS kustom dihapus."
                                         }) { Text("HAPUS", color = Color(0xFFFF8A80), fontSize = 10.sp) }
@@ -140,6 +147,21 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        Text("PROTOKOL DNS", color = Color(0xFF20C9B0), fontSize = 13.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("UDP", "DoT", "DoH").forEach { mode ->
+                                FilterChip(selected = transport == mode, onClick = { if (!isOn) transport = mode }, label = { Text(mode) }, enabled = !isOn)
+                            }
+                        }
+                        if (transport != "UDP") {
+                            OutlinedTextField(
+                                value = dnsHost, onValueChange = { dnsHost = it.trim() },
+                                label = { Text(if (transport == "DoT") "Host TLS, contoh: one.one.one.one" else "Host HTTPS, contoh: cloudflare-dns.com") },
+                                singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !isOn,
+                                colors = dnsFieldColors()
+                            )
+                            Text("Alamat IPv4 di bawah menjadi alamat bootstrap untuk host terenkripsi.", color = Color.Gray, fontSize = 11.sp)
+                        }
                         Text("TAMBAH DNS SENDIRI", color = Color(0xFF20C9B0), fontSize = 13.sp)
                         OutlinedTextField(
                             value = dnsName,
@@ -166,12 +188,15 @@ class MainActivity : ComponentActivity() {
                                 val address = dnsAddress.trim()
                                 when {
                                     !isValidIpv4(address) -> message = "Alamat tidak valid. Masukkan IPv4, misalnya 1.1.1.1."
+                                    transport != "UDP" && !isValidHost(dnsHost.trim()) -> message = "Nama host DNS tidak valid."
                                     allOptions.any { it.address == address } -> message = "Alamat DNS tersebut sudah tersedia."
                                     else -> {
-                                        val added = DnsOption(name, address, "DNS kustom tersimpan", true)
+                                        val added = DnsOption(name, address, "DNS kustom tersimpan", true, transport, if (transport == "UDP") "" else dnsHost.trim())
                                         customOptions = customOptions + added
                                         prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map { "${it.name}|${it.address}" }.toSet()).apply()
                                         selected = added
+                                        transport = added.transport
+                                        dnsHost = added.host
                                         dnsName = ""
                                         dnsAddress = ""
                                         message = "DNS berhasil disimpan dan dipilih. Tekan SAMBUNGKAN untuk menggunakannya."
@@ -184,10 +209,6 @@ class MainActivity : ComponentActivity() {
                         ) { Text("SIMPAN DNS", color = Color(0xFF071512)) }
 
                         message?.let { Text(it, color = if (it.startsWith("DNS berhasil")) Color(0xFF20C9B0) else Color(0xFFFFB4AB), fontSize = 12.sp) }
-                        Text(
-                            "DNS kustom disimpan di perangkat dan tetap tersedia setelah aplikasi ditutup. Untuk mengganti DNS saat tersambung, putuskan koneksi terlebih dahulu.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
                     }
                 }
             }
@@ -202,27 +223,19 @@ class MainActivity : ComponentActivity() {
         cursorColor = Color(0xFF20C9B0)
     )
 
-    private fun testDns(address: String, onResult: (String) -> Unit) {
+    private fun testDns(option: DnsOption, onResult: (String) -> Unit) {
         thread(name = "dns-connectivity-test") {
             var result = "GAGAL: DNS tidak merespons."
             try {
-                val server = InetAddress.getByName(address)
                 val query = buildDnsQuery()
-                val socket = DatagramSocket()
-                try {
-                    socket.soTimeout = 3500
-                    val elapsed = measureTimeMillis {
-                        socket.send(DatagramPacket(query, query.size, server, 53))
-                        val buffer = ByteArray(2048)
-                        val packet = DatagramPacket(buffer, buffer.size)
-                        socket.receive(packet)
-                        if (packet.length < 12 || buffer[0] != query[0] || buffer[1] != query[1] ||
-                            (buffer[2].toInt() and 0x80) == 0 || (buffer[3].toInt() and 0x0f) != 0) {
-                            throw IllegalStateException("Respons DNS tidak valid atau mengandung error.")
-                        }
+                val elapsed = measureTimeMillis {
+                    val answer = DnsTransport.query(option.address, option.transport, option.host, query)
+                    if (answer.size < 12 || answer[0] != query[0] || answer[1] != query[1] ||
+                        (answer[2].toInt() and 0x80) == 0 || (answer[3].toInt() and 0x0f) != 0) {
+                        throw IllegalStateException("Respons DNS tidak valid atau mengandung error.")
                     }
-                    result = "BERHASIL: $address merespons dalam ${elapsed} ms."
-                } finally { socket.close() }
+                }
+                result = "BERHASIL: ${option.name} (${option.transport}) merespons dalam ${elapsed} ms."
             } catch (e: Exception) {
                 result = "GAGAL: ${e.message ?: "Tidak ada respons DNS"}"
             }
@@ -244,13 +257,20 @@ class MainActivity : ComponentActivity() {
         return out.toByteArray()
     }
 
-    private fun startDns(address: String) {
+    private fun startDns(option: DnsOption) {
         val intent = Intent(this, DnsVpnService::class.java).apply {
             action = DnsVpnService.ACTION_START
-            putExtra(DnsVpnService.EXTRA_DNS, address)
+            putExtra(DnsVpnService.EXTRA_DNS, option.address)
+            putExtra(DnsVpnService.EXTRA_MODE, option.transport)
+            putExtra(DnsVpnService.EXTRA_HOST, option.host)
         }
         startService(intent)
         connectionState = true
+    }
+
+    private fun getSavedCustomOptions(): List<DnsOption> = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(CUSTOM_DNS, emptySet()).orEmpty().mapNotNull { entry ->
+        val p = entry.split("|", limit = 4)
+        if (p.size >= 2 && isValidIpv4(p[1])) DnsOption(p[0], p[1], "DNS tersimpan", true, p.getOrElse(2) { "UDP" }, p.getOrElse(3) { "" }) else null
     }
 
     private fun stopDns() {
@@ -258,6 +278,8 @@ class MainActivity : ComponentActivity() {
         connectionState = false
     }
 }
+
+private fun isValidHost(value: String): Boolean = value.length in 1..253 && value.split(".").all { it.isNotEmpty() && it.length <= 63 && it.first() != '-' && it.last() != '-' && it.all { ch -> ch.isLetterOrDigit() || ch == '-' } }
 
 private fun isValidIpv4(value: String): Boolean {
     val parts = value.split(".")
