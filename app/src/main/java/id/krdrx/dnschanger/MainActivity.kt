@@ -26,7 +26,7 @@ private val options = listOf(
 
 class MainActivity : ComponentActivity() {
     private var pendingDns by mutableStateOf("1.1.1.1")
-    private var connected by mutableStateOf(false)
+    private var connectionState by mutableStateOf(false)
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) startDns(pendingDns)
     }
@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             var selected by remember { mutableStateOf(options.first()) }
-            var isOn by remember { mutableStateOf(false) }
+            val isOn = connectionState
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF20C9B0), background = Color(0xFF101820),
                 surface = Color(0xFF1B2732), onSurface = Color(0xFFEAF2F5)
@@ -54,11 +54,10 @@ class MainActivity : ComponentActivity() {
                                 Button(onClick = {
                                     if (isOn) {
                                         stopDns()
-                                        isOn = false
                                     } else {
                                         pendingDns = selected.address
                                         val prepare = VpnService.prepare(this@MainActivity)
-                                        if (prepare == null) { startDns(selected.address); isOn = true }
+                                        if (prepare == null) startDns(selected.address)
                                         else vpnPermission.launch(prepare)
                                     }
                                 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF20C9B0)), modifier = Modifier.fillMaxWidth()) {
@@ -96,9 +95,11 @@ class MainActivity : ComponentActivity() {
             putExtra(DnsVpnService.EXTRA_DNS, address)
         }
         startService(intent)
+        connectionState = true
     }
 
     private fun stopDns() {
         startService(Intent(this, DnsVpnService::class.java).setAction(DnsVpnService.ACTION_STOP))
+        connectionState = false
     }
 }
