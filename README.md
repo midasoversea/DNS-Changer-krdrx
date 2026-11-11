@@ -1,26 +1,34 @@
 # DNS Changer
 
-Aplikasi Android pengubah DNS melalui VPN lokal (tanpa root).
+Aplikasi Android pengubah DNS melalui VPN lokal tanpa root.
 
 ## Fitur
-- Pilihan Cloudflare (1.1.1.1), Google (8.8.8.8), dan Quad9 (9.9.9.9).
-- Tombol sambungkan dan putuskan.
-- VPN lokal meneruskan permintaan DNS IPv4/UDP ke penyedia terpilih.
-- Tidak mengumpulkan akun atau riwayat penjelajahan.
+- DNS bawaan: Cloudflare, Google, Quad9, OpenDNS, AdGuard DNS, dan CleanBrowsing Family.
+- Tambah profil DNS sendiri menggunakan nama dan alamat IPv4.
+- Profil DNS kustom disimpan lokal di perangkat dan tetap tersedia setelah aplikasi ditutup.
+- Pilih profil, sambungkan, dan putuskan VPN DNS.
 - GitHub Actions membangun APK debug pada setiap push ke branch `main`.
 
-## Build
-Persyaratan: Android Studio, JDK 17, Android SDK 35, dan Gradle 8.9.
+## Menambahkan DNS kustom
+1. Isi nama DNS (opsional).
+2. Masukkan alamat IPv4, misalnya `1.1.1.1`.
+3. Tekan **SIMPAN DNS**.
+4. Profil akan langsung masuk daftar dan terpilih.
+5. Tekan **SAMBUNGKAN** untuk menggunakannya.
 
-Jalankan:
+Profil kustom dapat dihapus dengan tombol **HAPUS** saat koneksi sedang terputus. Data profil disimpan di SharedPreferences aplikasi dan tidak dikirim ke server.
+
+## Build
+Persyaratan: JDK 17, Android SDK 35, dan Gradle 8.9.
+
 ```bash
 gradle --no-daemon assembleDebug
 ```
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Batasan implementasi awal
-- DNS IPv4 melalui UDP didukung.
+## Batasan teknis
+- Implementasi penerusan paket saat ini menangani DNS IPv4 melalui UDP.
 - DNS melalui TCP dan IPv6 belum ditangani.
-- Aplikasi menggunakan slot VPN Android. VPN lain (misalnya VPN kantor atau aplikasi VPN lain) tidak dapat berjalan bersamaan.
-- Setelah mengaktifkan DNS, uji akses internet pada perangkat dan jaringan yang digunakan.
+- Aplikasi menggunakan slot VPN Android sehingga tidak dapat berjalan bersamaan dengan VPN lain.
+- Pengujian pada perangkat fisik tetap diperlukan untuk memvalidasi DNS dari masing-masing penyedia.
