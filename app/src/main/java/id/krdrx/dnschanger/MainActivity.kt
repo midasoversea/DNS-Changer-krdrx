@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var customOptions by remember { mutableStateOf(initialCustom) }
-            var selected by remember { mutableStateOf((builtInOptions + initialCustom.mapNotNull { entry -> val p = entry.split("|", limit = 2); if (p.size == 2 && isValidIpv4(p[1])) DnsOption(p[0], p[1], "DNS tersimpan", true) else null }).firstOrNull { it.address == activeDns } ?: builtInOptions.first()) }
+            var selected by remember { mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.address == activeDns } ?: builtInOptions.first()) }
             var testStatus by remember { mutableStateOf<String?>(null) }
             var testing by remember { mutableStateOf(false) }
             var dnsName by remember { mutableStateOf("") }
@@ -210,7 +210,6 @@ class MainActivity : ComponentActivity() {
                 val query = buildDnsQuery()
                 val socket = DatagramSocket()
                 try {
-                    if (!protect(socket)) throw IllegalStateException("Gagal mengecualikan tes dari VPN")
                     socket.soTimeout = 3500
                     val elapsed = measureTimeMillis {
                         socket.send(DatagramPacket(query, query.size, server, 53))
