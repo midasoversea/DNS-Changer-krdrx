@@ -50,9 +50,10 @@ private const val CUSTOM_DNS = "custom_dns"
 
 class MainActivity : ComponentActivity() {
     private var pendingDns by mutableStateOf("1.1.1.1")
+    private var pendingOption: DnsOption? = null
     private var connectionState by mutableStateOf(false)
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) startDns((builtInOptions + getSavedCustomOptions()).firstOrNull { it.address == pendingDns } ?: builtInOptions.first())
+        if (result.resultCode == Activity.RESULT_OK) startDns(pendingOption ?: (builtInOptions + getSavedCustomOptions()).firstOrNull { it.address == pendingDns } ?: builtInOptions.first())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
                                     onClick = {
                                         if (isOn) stopDns() else {
                                             pendingDns = selected.address
+                                            pendingOption = selected
                                             val prepare = VpnService.prepare(this@MainActivity)
                                             if (prepare == null) startDns(selected) else vpnPermission.launch(prepare)
                                         }
@@ -114,7 +116,7 @@ class MainActivity : ComponentActivity() {
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedButton(
                                     onClick = { if (!testing) testDns(selected) { result -> testStatus = result; testing = false } .also { testing = true } },
-                                    enabled = !testing,
+                                    enabled = !testing && !isOn,
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text(if (testing) "MENGUJI DNS..." else "UJI KONEKSI DNS") }
                                 testStatus?.let { Text(it, color = if (it.startsWith("BERHASIL")) Color(0xFF20C9B0) else Color(0xFFFFB4AB), fontSize = 12.sp) }
