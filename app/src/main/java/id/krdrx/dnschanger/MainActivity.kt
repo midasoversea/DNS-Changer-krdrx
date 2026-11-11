@@ -5,6 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import kotlin.concurrent.thread
+import kotlin.system.measureTimeMillis
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +53,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        connectionState = prefs.getBoolean(DnsVpnService.KEY_RUNNING, false)
+        val activeDns = prefs.getString(DnsVpnService.KEY_ACTIVE_DNS, null)
         val initialCustom = prefs.getStringSet(CUSTOM_DNS, emptySet()).orEmpty()
             .mapNotNull { entry ->
                 val parts = entry.split("|", limit = 2)
@@ -56,7 +63,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var customOptions by remember { mutableStateOf(initialCustom) }
-            var selected by remember { mutableStateOf(builtInOptions.first()) }
+            var selected by remember { mutableStateOf((builtInOptions + initialCustom.mapNotNull { entry -> val p = entry.split("|", limit = 2); if (p.size == 2 && isValidIpv4(p[1])) DnsOption(p[0], p[1], "DNS tersimpan", true) else null }).firstOrNull { it.address == activeDns } ?: builtInOptions.first()) }
+            var testStatus by remember { mutableStateOf<String?>(null) }
+            var testing by remember { mutableStateOf(false) }
             var dnsName by remember { mutableStateOf("") }
             var dnsAddress by remember { mutableStateOf("") }
             var message by remember { mutableStateOf<String?>(null) }
@@ -95,6 +104,13 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Text(if (isOn) "PUTUSKAN" else "SAMBUNGKAN", color = Color(0xFF071512))
                                 }
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = { if (!testing) testDns(selected.address) { result -> testStatus = result; testing = false } .also { testing = true } },
+                                    enabled = !testing,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text(if (testing) "MENGUJI DNS..." else "UJI KONEKSI DNS") }
+                                testStatus?.let { Text(it, color = if (it.startsWith("BERHASIL")) Color(0xFF20C9B0) else Color(0xFFFFB4AB), fontSize = 12.sp) }
                             }
                         }
 
@@ -185,6 +201,49 @@ class MainActivity : ComponentActivity() {
         focusedLabelColor = Color(0xFF20C9B0), unfocusedLabelColor = Color.LightGray,
         cursorColor = Color(0xFF20C9B0)
     )
+
+    private fun testDns(address: String, onResult: (String) -> Unit) {
+        thread(name = "dns-connectivity-test") {
+            var result = "GAGAL: DNS tidak merespons."
+            try {
+                val server = InetAddress.getByName(address)
+                val query = buildDnsQuery()
+                val socket = DatagramSocket()
+                try {
+                    if (!protect(socket)) throw IllegalStateException("Gagal mengecualikan tes dari VPN")
+                    socket.soTimeout = 3500
+                    val elapsed = measureTimeMillis {
+                        socket.send(DatagramPacket(query, query.size, server, 53))
+                        val buffer = ByteArray(2048)
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        socket.receive(packet)
+                        if (packet.length < 12 || buffer[0] != query[0] || buffer[1] != query[1] ||
+                            (buffer[2].toInt() and 0x80) == 0 || (buffer[3].toInt() and 0x0f) != 0) {
+                            throw IllegalStateException("Respons DNS tidak valid atau mengandung error.")
+                        }
+                    }
+                    result = "BERHASIL: $address merespons dalam ${elapsed} ms."
+                } finally { socket.close() }
+            } catch (e: Exception) {
+                result = "GAGAL: ${e.message ?: "Tidak ada respons DNS"}"
+            }
+            runOnUiThread { onResult(result) }
+        }
+    }
+
+    private fun buildDnsQuery(): ByteArray {
+        val name = "example.com"
+        val out = java.io.ByteArrayOutputStream()
+        out.write(byteArrayOf(0x4b, 0x52, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
+        name.split(".").forEach { label ->
+            val bytes = label.toByteArray(Charsets.US_ASCII)
+            out.write(bytes.size)
+            out.write(bytes)
+        }
+        out.write(0)
+        out.write(byteArrayOf(0x00, 0x01, 0x00, 0x01))
+        return out.toByteArray()
+    }
 
     private fun startDns(address: String) {
         val intent = Intent(this, DnsVpnService::class.java).apply {
