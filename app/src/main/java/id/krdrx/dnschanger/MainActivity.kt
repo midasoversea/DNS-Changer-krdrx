@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
             var dnsHost by remember { mutableStateOf(selected.host) }
             var testStatus by remember { mutableStateOf<String?>(null) }
             var testing by remember { mutableStateOf(false) }
+            var testRequestId by remember { mutableStateOf(0L) }
             var dnsName by remember { mutableStateOf("") }
             var dnsAddress by remember { mutableStateOf("") }
             var message by remember { mutableStateOf<String?>(null) }
@@ -98,7 +99,12 @@ class MainActivity : ComponentActivity() {
                     val state = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                     connectionState = state.getBoolean(DnsVpnService.KEY_RUNNING, false)
                     activeProfileKey = state.getString(DnsVpnService.KEY_ACTIVE_PROFILE, null)
-                    delay(700)
+                    if (testRequestId != 0L && state.getLong(DnsVpnService.KEY_TEST_ID, 0L) == testRequestId) {
+                        testStatus = state.getString(DnsVpnService.KEY_TEST_RESULT, null)
+                        testing = false
+                        testRequestId = 0L
+                    }
+                    delay(500)
                 }
             }
 
@@ -138,8 +144,28 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedButton(
-                                    onClick = { if (!testing) testDns(selected) { result -> testStatus = result; testing = false } .also { testing = true } },
-                                    enabled = !testing && !isOn,
+                                    onClick = {
+                                        if (!testing) {
+                                            testing = true
+                                            testStatus = null
+                                            val option = selected.copy(transport = transport, host = if (transport == "UDP") "" else dnsHost.trim())
+                                            if (isOn) {
+                                                testRequestId = System.currentTimeMillis()
+                                                getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                                                    .putLong(DnsVpnService.KEY_TEST_ID, 0L).putString(DnsVpnService.KEY_TEST_RESULT, "").apply()
+                                                startService(Intent(this@MainActivity, DnsVpnService::class.java).apply {
+                                                    action = DnsVpnService.ACTION_TEST
+                                                    putExtra(DnsVpnService.EXTRA_DNS, option.address)
+                                                    putExtra(DnsVpnService.EXTRA_MODE, option.transport)
+                                                    putExtra(DnsVpnService.EXTRA_HOST, option.host)
+                                                    putExtra(DnsVpnService.EXTRA_TEST_ID, testRequestId)
+                                                })
+                                            } else {
+                                                testDns(option) { result -> testStatus = result; testing = false }
+                                            }
+                                        }
+                                    },
+                                    enabled = !testing,
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text(if (testing) "MENGUJI DNS..." else "UJI KONEKSI DNS") }
                                 testStatus?.let { Text(it, color = if (it.startsWith("BERHASIL")) Color(0xFF20C9B0) else Color(0xFFFFB4AB), fontSize = 12.sp) }
