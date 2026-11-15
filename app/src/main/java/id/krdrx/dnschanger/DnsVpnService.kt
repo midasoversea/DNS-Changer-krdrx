@@ -15,6 +15,8 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
@@ -59,10 +61,8 @@ class DnsVpnService : VpnService() {
                 val input = FileInputStream(fd)
                 val output = FileOutputStream(fd)
                 val buffer = ByteArray(32767)
-                val udp = DatagramSocket()
+                val workers = Executors.newFixedThreadPool(4)
                 try {
-                    if (!protect(udp)) error("Tidak dapat mengecualikan socket DNS dari VPN")
-                    udp.soTimeout = 5000
                     while (running && token == sessionId) {
                         val length = input.read(buffer)
                         if (length < 28) continue
@@ -76,27 +76,44 @@ class DnsVpnService : VpnService() {
                         val size = total - ihl - 8
                         if (size < 12) continue
                         val query = buffer.copyOfRange(u + 8, u + 8 + size)
-                        try {
-                            val response = when (mode) {
-                                "DoT" -> queryTls(bootstrap, host, query)
-                                "DoH" -> queryHttps(bootstrap, host, query)
-                                else -> queryUdp(udp, bootstrap, query)
-                            }
-                            output.write(buildResponse(buffer, ihl, u, response))
-                        } catch (_: Exception) { }
+                        val originalPacket = buffer.copyOf(length)
+                        workers.execute {
+                            try {
+                                val response = when (mode) {
+                                    "DoT" -> queryTls(bootstrap, host, query)
+                                    "DoH" -> queryHttps(bootstrap, host, query)
+                                    else -> queryUdp(bootstrap, query)
+                                }
+                                if (response.size >= 12 && response[0] == query[0] && response[1] == query[1]) {
+                                    synchronized(output) {
+                                        if (running && token == sessionId) output.write(buildResponse(originalPacket, ihl, u, response))
+                                    }
+                                }
+                            } catch (_: Exception) { }
+                        }
                     }
                 } catch (_: Exception) {
-                } finally { udp.close(); if (token == sessionId) stopVpn() }
+                } finally {
+                    workers.shutdownNow()
+                    workers.awaitTermination(1, TimeUnit.SECONDS)
+                    if (token == sessionId) stopVpn()
+                }
             }
         } catch (_: Exception) { stopVpn() }
     }
 
-    private fun queryUdp(socket: DatagramSocket, server: InetAddress, query: ByteArray): ByteArray {
-        socket.send(DatagramPacket(query, query.size, server, 53))
-        val data = ByteArray(4096)
-        val packet = DatagramPacket(data, data.size)
-        socket.receive(packet)
-        return data.copyOf(packet.length)
+    private fun queryUdp(server: InetAddress, query: ByteArray): ByteArray {
+        val socket = DatagramSocket()
+        try {
+            if (!protect(socket)) error("Tidak dapat mengecualikan socket DNS dari VPN")
+            socket.soTimeout = 5000
+            socket.send(DatagramPacket(query, query.size, server, 53))
+            val data = ByteArray(4096)
+            val packet = DatagramPacket(data, data.size)
+            socket.receive(packet)
+            if (packet.address != server || packet.port != 53) error("Sumber respons DNS tidak sesuai")
+            return data.copyOf(packet.length)
+        } finally { socket.close() }
     }
 
     private fun tlsSocket(ip: InetAddress, host: String, port: Int): SSLSocket {
