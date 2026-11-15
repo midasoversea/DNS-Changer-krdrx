@@ -23,23 +23,27 @@ import kotlin.concurrent.thread
 
 class DnsVpnService : VpnService() {
     @Volatile private var running = false
+    @Volatile private var sessionId = 0L
     private var tun: ParcelFileDescriptor? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
-            ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "")
+            ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "", intent.getStringExtra(EXTRA_PROFILE) ?: "")
             else -> {
                 val p = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val saved = p.getString(KEY_ACTIVE_DNS, null)
-                if (saved != null && !running) startVpn(saved, p.getString(KEY_ACTIVE_MODE, "UDP") ?: "UDP", p.getString(KEY_ACTIVE_HOST, "") ?: "")
+                if (saved != null && !running) startVpn(saved, p.getString(KEY_ACTIVE_MODE, "UDP") ?: "UDP", p.getString(KEY_ACTIVE_HOST, "") ?: "", p.getString(KEY_ACTIVE_PROFILE, "") ?: "")
             }
         }
         return START_STICKY
     }
 
-    private fun startVpn(dns: String, mode: String, host: String) {
-        if (running) stopVpn()
+    private fun startVpn(dns: String, mode: String, host: String, profile: String) {
+        val token = ++sessionId
+        running = false
+        try { tun?.close() } catch (_: Exception) { }
+        tun = null
         try {
             startForeground(NOTIFICATION_ID, buildNotification(dns, mode))
             val bootstrap = InetAddress.getByName(dns)
@@ -48,9 +52,10 @@ class DnsVpnService : VpnService() {
                 ?: run { stopForeground(STOP_FOREGROUND_REMOVE); return }
             running = true
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_ACTIVE_DNS, dns)
-                .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putBoolean(KEY_RUNNING, true).apply()
+                .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putString(KEY_ACTIVE_PROFILE, profile).putBoolean(KEY_RUNNING, true).apply()
             thread(name = "dns-forwarder") {
-                val fd = tun?.fileDescriptor ?: return@thread
+                val sessionTun = tun ?: return@thread
+                val fd = sessionTun.fileDescriptor
                 val input = FileInputStream(fd)
                 val output = FileOutputStream(fd)
                 val buffer = ByteArray(32767)
@@ -58,7 +63,7 @@ class DnsVpnService : VpnService() {
                 try {
                     if (!protect(udp)) error("Tidak dapat mengecualikan socket DNS dari VPN")
                     udp.soTimeout = 5000
-                    while (running) {
+                    while (running && token == sessionId) {
                         val length = input.read(buffer)
                         if (length < 28) continue
                         val ihl = (buffer[0].toInt() and 15) * 4
@@ -81,7 +86,7 @@ class DnsVpnService : VpnService() {
                         } catch (_: Exception) { }
                     }
                 } catch (_: Exception) {
-                } finally { udp.close(); stopVpn() }
+                } finally { udp.close(); if (token == sessionId) stopVpn() }
             }
         } catch (_: Exception) { stopVpn() }
     }
@@ -195,11 +200,12 @@ class DnsVpnService : VpnService() {
     }
 
     private fun stopVpn() {
+        sessionId++
         running = false
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false)
-            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).apply()
+            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).apply()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
         stopSelf()
     }
@@ -212,10 +218,12 @@ class DnsVpnService : VpnService() {
         const val EXTRA_DNS = "dns"
         const val EXTRA_MODE = "mode"
         const val EXTRA_HOST = "host"
+        const val EXTRA_PROFILE = "profile"
         const val PREFS = "dns_profiles"
         const val KEY_ACTIVE_DNS = "active_dns"
         const val KEY_ACTIVE_MODE = "active_mode"
         const val KEY_ACTIVE_HOST = "active_host"
+        const val KEY_ACTIVE_PROFILE = "active_profile"
         const val KEY_RUNNING = "vpn_running"
         private const val NOTIFICATION_ID = 101
     }
