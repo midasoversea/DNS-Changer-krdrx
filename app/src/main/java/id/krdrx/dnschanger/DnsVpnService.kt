@@ -271,7 +271,19 @@ class DnsVpnService : VpnService() {
         stopSelf()
     }
 
-    override fun onDestroy() { running = false; try { tun?.close() } catch (_: Exception) { }; super.onDestroy() }
+    override fun onRevoke() {
+        stopVpn()
+        super.onRevoke()
+    }
+
+    override fun onDestroy() {
+        running = false
+        try { tun?.close() } catch (_: Exception) { }
+        tun = null
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false)
+            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).apply()
+        super.onDestroy()
+    }
 
     companion object {
         const val ACTION_START = "id.krdrx.dnschanger.START"
