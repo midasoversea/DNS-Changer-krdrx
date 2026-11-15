@@ -35,7 +35,7 @@ class DnsVpnService : VpnService() {
             else -> {
                 val p = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val saved = p.getString(KEY_ACTIVE_DNS, null)
-                if (saved != null && !running) startVpn(saved, p.getString(KEY_ACTIVE_MODE, "UDP") ?: "UDP", p.getString(KEY_ACTIVE_HOST, "") ?: "", p.getString(KEY_ACTIVE_PROFILE, "") ?: "")
+                if (saved != null && !running) startVpn(saved, p.getString(KEY_ACTIVE_MODE, "UDP") ?: "UDP", p.getString(KEY_ACTIVE_HOST, "") ?: "", p.getString(KEY_ACTIVE_PROFILE, "") ?: "", p.getString(KEY_ACTIVE_NAME, "DNS") ?: "DNS")
             }
         }
         return START_STICKY
