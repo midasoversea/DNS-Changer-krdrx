@@ -77,12 +77,19 @@ class MainActivity : ComponentActivity() {
         connectionState = prefs.getBoolean(DnsVpnService.KEY_RUNNING, false)
         activeProfileKey = prefs.getString(DnsVpnService.KEY_ACTIVE_PROFILE, null)
         val activeKey = activeProfileKey
+        val activeDns = prefs.getString(DnsVpnService.KEY_ACTIVE_DNS, null)
+        val activeMode = prefs.getString(DnsVpnService.KEY_ACTIVE_MODE, "UDP") ?: "UDP"
+        val activeHost = prefs.getString(DnsVpnService.KEY_ACTIVE_HOST, "") ?: ""
         val initialCustom = prefs.getStringSet(CUSTOM_DNS, emptySet()).orEmpty()
             .mapNotNull(::decodeDnsOption).sortedBy { it.name.lowercase() }
 
         setContent {
             var customOptions by remember { mutableStateOf(initialCustom) }
-            var selected by remember { mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.key == activeKey } ?: builtInOptions.first()) }
+            var selected by remember {
+                mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.key == activeKey }
+                    ?: (builtInOptions + initialCustom).firstOrNull { it.address == activeDns && it.transport == activeMode && it.host == activeHost }
+                    ?: builtInOptions.first())
+            }
             var transport by remember { mutableStateOf(selected.transport) }
             var dnsHost by remember { mutableStateOf(selected.host) }
             var testStatus by remember { mutableStateOf<String?>(null) }
