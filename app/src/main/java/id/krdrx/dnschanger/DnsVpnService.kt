@@ -31,31 +31,25 @@ class DnsVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
-            ACTION_TEST -> {
-                runUpstreamTest(
-                    intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1",
-                    intent.getStringExtra(EXTRA_MODE) ?: "UDP",
-                    intent.getStringExtra(EXTRA_HOST) ?: "",
-                    intent.getLongExtra(EXTRA_TEST_ID, 0L)
-                )
-                return START_NOT_STICKY
-            }
-            ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "", intent.getStringExtra(EXTRA_PROFILE) ?: "")
+            ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "", intent.getStringExtra(EXTRA_PROFILE) ?: "", intent.getStringExtra(EXTRA_NAME) ?: "DNS")
             else -> {
                 val p = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val saved = p.getString(KEY_ACTIVE_DNS, null)
-                if (saved != null && !running) startVpn(saved, p.getString(KEY_ACTIVE_MODE, "UDP") ?: "UDP", p.getString(KEY_ACTIVE_HOST, "") ?: "", p.getString(KEY_ACTIVE_PROFILE, "") ?: "")
+                if (saved != null && !running) startVpn(saved, p.getString(KEY_ACTIVE_MODE, "UDP") ?: "UDP", p.getString(KEY_ACTIVE_HOST, "") ?: "", p.getString(KEY_ACTIVE_PROFILE, "") ?: "", p.getString(KEY_ACTIVE_NAME, "DNS") ?: "DNS")
             }
         }
         return START_STICKY
     }
 
-    private fun startVpn(dns: String, mode: String, host: String, profile: String) {
+    private fun startVpn(dns: String, mode: String, host: String, profile: String, name: String) {
         val token = ++sessionId
         running = false
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         try {
+            require(isValidIpv4Address(dns)) { "Alamat IPv4 DNS tidak valid" }
+            require(mode in setOf("UDP", "DoT", "DoH")) { "Protokol DNS tidak valid" }
+            require(mode == "UDP" || isValidDnsHost(host)) { "Host DoT/DoH tidak valid atau kosong" }
             startForeground(NOTIFICATION_ID, buildNotification(dns, mode))
             val bootstrap = InetAddress.getByName(dns)
             tun = Builder().setSession("DNS Changer").setMtu(1500).addAddress("10.111.0.1", 32)
@@ -63,7 +57,8 @@ class DnsVpnService : VpnService() {
                 ?: run { stopVpn(); return }
             running = true
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_ACTIVE_DNS, dns)
-                .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putString(KEY_ACTIVE_PROFILE, profile).putBoolean(KEY_RUNNING, true).apply()
+                .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putString(KEY_ACTIVE_PROFILE, profile)
+                .putString(KEY_ACTIVE_NAME, name).putBoolean(KEY_RUNNING, true).apply()
             thread(name = "dns-forwarder") {
                 val sessionTun = tun ?: return@thread
                 val fd = sessionTun.fileDescriptor
@@ -109,41 +104,6 @@ class DnsVpnService : VpnService() {
                 }
             }
         } catch (_: Exception) { stopVpn() }
-    }
-
-    private fun runUpstreamTest(dns: String, mode: String, host: String, requestId: Long) {
-        thread(name = "dns-upstream-test") {
-            val result = try {
-                val query = testQuery()
-                val server = InetAddress.getByName(dns)
-                val response = when (mode) {
-                    "DoT" -> queryTls(server, host, query)
-                    "DoH" -> queryHttps(server, host, query)
-                    else -> queryUdp(server, query)
-                }
-                if (response.size < 12 || response[0] != query[0] || response[1] != query[1] ||
-                    (response[2].toInt() and 0x80) == 0 || (response[3].toInt() and 0x0f) != 0) {
-                    error("Respons DNS tidak valid atau mengandung error")
-                }
-                "BERHASIL: server $mode merespons melalui socket VPN-terproteksi."
-            } catch (e: Exception) {
-                "GAGAL: ${e.message ?: "Server DNS tidak merespons"}"
-            }
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_TEST_RESULT, result).putLong(KEY_TEST_ID, requestId).apply()
-        }
-    }
-
-    private fun testQuery(): ByteArray {
-        val out = ByteArrayOutputStream()
-        out.write(byteArrayOf(0x4b, 0x52, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-        "example.com".split(".").forEach { label ->
-            val bytes = label.toByteArray(Charsets.US_ASCII)
-            out.write(bytes.size); out.write(bytes)
-        }
-        out.write(0)
-        out.write(byteArrayOf(0x00, 0x01, 0x00, 0x01))
-        return out.toByteArray()
     }
 
     private fun queryUdp(server: InetAddress, query: ByteArray): ByteArray {
@@ -266,7 +226,7 @@ class DnsVpnService : VpnService() {
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false)
-            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).apply()
+            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).remove(KEY_ACTIVE_NAME).apply()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
         stopSelf()
     }
@@ -281,27 +241,40 @@ class DnsVpnService : VpnService() {
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false)
-            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).apply()
+            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).remove(KEY_ACTIVE_NAME).apply()
         super.onDestroy()
     }
 
     companion object {
         const val ACTION_START = "id.krdrx.dnschanger.START"
         const val ACTION_STOP = "id.krdrx.dnschanger.STOP"
-        const val ACTION_TEST = "id.krdrx.dnschanger.TEST"
         const val EXTRA_DNS = "dns"
         const val EXTRA_MODE = "mode"
         const val EXTRA_HOST = "host"
         const val EXTRA_PROFILE = "profile"
-        const val EXTRA_TEST_ID = "test_id"
+        const val EXTRA_NAME = "name"
         const val PREFS = "dns_profiles"
         const val KEY_ACTIVE_DNS = "active_dns"
         const val KEY_ACTIVE_MODE = "active_mode"
         const val KEY_ACTIVE_HOST = "active_host"
         const val KEY_ACTIVE_PROFILE = "active_profile"
+        const val KEY_ACTIVE_NAME = "active_name"
         const val KEY_RUNNING = "vpn_running"
-        const val KEY_TEST_RESULT = "test_result"
-        const val KEY_TEST_ID = "test_id"
         private const val NOTIFICATION_ID = 101
     }
 }
+
+private fun isValidIpv4Address(value: String): Boolean {
+    val parts = value.split(".")
+    return parts.size == 4 && parts.all { part ->
+        part.isNotEmpty() && part.all(Char::isDigit) &&
+            (part.length == 1 || !part.startsWith("0")) &&
+            part.toIntOrNull()?.let { it in 0..255 } == true
+    }
+}
+
+private fun isValidDnsHost(value: String): Boolean =
+    value.length in 1..253 && value.split(".").all { label ->
+        label.isNotEmpty() && label.length <= 63 && label.first() != '-' &&
+            label.last() != '-' && label.all { it.isLetterOrDigit() || it == '-' }
+    }

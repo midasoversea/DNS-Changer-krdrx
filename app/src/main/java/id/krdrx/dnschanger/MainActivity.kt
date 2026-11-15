@@ -5,9 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 import kotlin.concurrent.thread
 import kotlin.system.measureTimeMillis
 import kotlinx.coroutines.delay
@@ -56,14 +53,18 @@ private fun decodeDnsOption(entry: String): DnsOption? {
     val p = entry.split("|")
     if (p.size !in 2..4) return null
     return try {
-        val fields = p.map { java.net.URLDecoder.decode(it, "UTF-8") }
+        // Format lama dua kolom disimpan mentah. Jangan URL-decode agar '+' dan '%' tetap utuh.
+        val fields = if (p.size == 2) p else p.map { java.net.URLDecoder.decode(it, "UTF-8") }
         if (!isValidIpv4(fields[1])) return null
-        DnsOption(fields[0], fields[1], "DNS tersimpan", true, fields.getOrElse(2) { "UDP" }, fields.getOrElse(3) { "" })
+        val mode = fields.getOrElse(2) { "UDP" }
+        val host = fields.getOrElse(3) { "" }
+        if (mode !in setOf("UDP", "DoT", "DoH")) return null
+        if (mode != "UDP" && !isValidHost(host)) return null
+        DnsOption(fields[0], fields[1], "DNS tersimpan", true, mode, host)
     } catch (_: Exception) { null }
 }
 
 class MainActivity : ComponentActivity() {
-    private var pendingDns by mutableStateOf("1.1.1.1")
     private var pendingOption: DnsOption? = null
     private var connectionState by mutableStateOf(false)
     private var activeProfileKey by mutableStateOf<String?>(null)
@@ -88,13 +89,13 @@ class MainActivity : ComponentActivity() {
             var selected by remember {
                 mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.key == activeKey }
                     ?: (builtInOptions + initialCustom).firstOrNull { it.address == activeDns && it.transport == activeMode && it.host == activeHost }
-                    ?: builtInOptions.first())
+                    ?: if (activeDns != null) DnsOption(prefs.getString(DnsVpnService.KEY_ACTIVE_NAME, "DNS aktif") ?: "DNS aktif", activeDns, "Konfigurasi aktif", true, activeMode, activeHost)
+                    else builtInOptions.first())
             }
             var transport by remember { mutableStateOf(selected.transport) }
             var dnsHost by remember { mutableStateOf(selected.host) }
             var testStatus by remember { mutableStateOf<String?>(null) }
             var testing by remember { mutableStateOf(false) }
-            var testRequestId by remember { mutableStateOf(0L) }
             var dnsName by remember { mutableStateOf("") }
             var dnsAddress by remember { mutableStateOf("") }
             var message by remember { mutableStateOf<String?>(null) }
@@ -106,11 +107,6 @@ class MainActivity : ComponentActivity() {
                     val state = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                     connectionState = state.getBoolean(DnsVpnService.KEY_RUNNING, false)
                     activeProfileKey = state.getString(DnsVpnService.KEY_ACTIVE_PROFILE, null)
-                    if (testRequestId != 0L && state.getLong(DnsVpnService.KEY_TEST_ID, 0L) == testRequestId) {
-                        testStatus = state.getString(DnsVpnService.KEY_TEST_RESULT, null)
-                        testing = false
-                        testRequestId = 0L
-                    }
                     delay(500)
                 }
             }
@@ -138,10 +134,16 @@ class MainActivity : ComponentActivity() {
                                     onClick = {
                                         if (isOn) stopDns() else {
                                             val effective = selected.copy(transport = transport, host = if (transport == "UDP") "" else dnsHost.trim())
-                                            pendingDns = effective.address
-                                            pendingOption = effective
-                                            val prepare = VpnService.prepare(this@MainActivity)
-                                            if (prepare == null) startDns(effective) else vpnPermission.launch(prepare)
+                                            when {
+                                                !isValidIpv4(effective.address) -> message = "Alamat IPv4 DNS tidak valid."
+                                                effective.transport !in setOf("UDP", "DoT", "DoH") -> message = "Protokol DNS tidak valid."
+                                                effective.transport != "UDP" && !isValidHost(effective.host) -> message = "Host DoT/DoH wajib diisi dengan nama host yang valid."
+                                                else -> {
+                                                    pendingOption = effective
+                                                    val prepare = VpnService.prepare(this@MainActivity)
+                                                    if (prepare == null) startDns(effective) else vpnPermission.launch(prepare)
+                                                }
+                                            }
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF20C9B0)),
@@ -157,22 +159,14 @@ class MainActivity : ComponentActivity() {
                                             testStatus = null
                                             val option = selected.copy(transport = transport, host = if (transport == "UDP") "" else dnsHost.trim())
                                             if (isOn) {
-                                                testRequestId = System.currentTimeMillis()
-                                                getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                                                    .putLong(DnsVpnService.KEY_TEST_ID, 0L).putString(DnsVpnService.KEY_TEST_RESULT, "").apply()
-                                                startService(Intent(this@MainActivity, DnsVpnService::class.java).apply {
-                                                    action = DnsVpnService.ACTION_TEST
-                                                    putExtra(DnsVpnService.EXTRA_DNS, option.address)
-                                                    putExtra(DnsVpnService.EXTRA_MODE, option.transport)
-                                                    putExtra(DnsVpnService.EXTRA_HOST, option.host)
-                                                    putExtra(DnsVpnService.EXTRA_TEST_ID, testRequestId)
-                                                })
+                                                testing = false
+                                                testStatus = "Putuskan VPN terlebih dahulu untuk menguji server DNS."
                                             } else {
                                                 testDns(option) { result -> testStatus = result; testing = false }
                                             }
                                         }
                                     },
-                                    enabled = !testing,
+                                    enabled = !testing && !isOn,
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text(if (testing) "MENGUJI DNS..." else "UJI KONEKSI DNS") }
                                 testStatus?.let { Text(it, color = if (it.startsWith("BERHASIL")) Color(0xFF20C9B0) else Color(0xFFFFB4AB), fontSize = 12.sp) }
@@ -322,12 +316,10 @@ class MainActivity : ComponentActivity() {
             putExtra(DnsVpnService.EXTRA_MODE, option.transport)
             putExtra(DnsVpnService.EXTRA_HOST, option.host)
             putExtra(DnsVpnService.EXTRA_PROFILE, option.key)
+            putExtra(DnsVpnService.EXTRA_NAME, option.name)
         }
         startService(intent)
     }
-
-    private fun getSavedCustomOptions(): List<DnsOption> = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .getStringSet(CUSTOM_DNS, emptySet()).orEmpty().mapNotNull(::decodeDnsOption)
 
     override fun onResume() {
         super.onResume()
