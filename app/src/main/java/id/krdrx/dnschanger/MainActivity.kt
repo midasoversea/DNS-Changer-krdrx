@@ -27,7 +27,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private data class DnsOption(val name: String, val address: String, val detail: String, val custom: Boolean = false, val transport: String = "UDP", val host: String = "")
+private data class DnsOption(val name: String, val address: String, val detail: String, val custom: Boolean = false, val transport: String = "UDP", val host: String = "") { val key: String get() = listOf(name, address, transport, host).joinToString("|") }
 
 private val builtInOptions = listOf(
     DnsOption("Cloudflare", "1.1.1.1", "DNS publik, fokus privasi"),
@@ -48,28 +48,40 @@ private val builtInOptions = listOf(
 private const val PREFS = "dns_profiles"
 private const val CUSTOM_DNS = "custom_dns"
 
+private fun encodeDnsOption(option: DnsOption): String = listOf(option.name, option.address, option.transport, option.host)
+    .joinToString("|") { java.net.URLEncoder.encode(it, "UTF-8") }
+
+private fun decodeDnsOption(entry: String): DnsOption? {
+    val p = entry.split("|")
+    if (p.size !in 2..4) return null
+    return try {
+        val fields = p.map { java.net.URLDecoder.decode(it, "UTF-8") }
+        if (!isValidIpv4(fields[1])) return null
+        DnsOption(fields[0], fields[1], "DNS tersimpan", true, fields.getOrElse(2) { "UDP" }, fields.getOrElse(3) { "" })
+    } catch (_: Exception) { null }
+}
+
 class MainActivity : ComponentActivity() {
     private var pendingDns by mutableStateOf("1.1.1.1")
     private var pendingOption: DnsOption? = null
     private var connectionState by mutableStateOf(false)
+    private var activeProfileKey by mutableStateOf<String?>(null)
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) startDns(pendingOption ?: (builtInOptions + getSavedCustomOptions()).firstOrNull { it.address == pendingDns } ?: builtInOptions.first())
+        if (result.resultCode == Activity.RESULT_OK) pendingOption?.let { startDns(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         connectionState = prefs.getBoolean(DnsVpnService.KEY_RUNNING, false)
-        val activeDns = prefs.getString(DnsVpnService.KEY_ACTIVE_DNS, null)
+        activeProfileKey = prefs.getString(DnsVpnService.KEY_ACTIVE_PROFILE, null)
+        val activeKey = activeProfileKey
         val initialCustom = prefs.getStringSet(CUSTOM_DNS, emptySet()).orEmpty()
-            .mapNotNull { entry ->
-                val parts = entry.split("|", limit = 4)
-                if (parts.size >= 2 && isValidIpv4(parts[1])) DnsOption(parts[0], parts[1], "DNS tersimpan", true, parts.getOrElse(2) { "UDP" }, parts.getOrElse(3) { "" }) else null
-            }.sortedBy { it.name.lowercase() }
+            .mapNotNull(::decodeDnsOption).sortedBy { it.name.lowercase() }
 
         setContent {
             var customOptions by remember { mutableStateOf(initialCustom) }
-            var selected by remember { mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.address == activeDns } ?: builtInOptions.first()) }
+            var selected by remember { mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.key == activeKey } ?: builtInOptions.first()) }
             var transport by remember { mutableStateOf(selected.transport) }
             var dnsHost by remember { mutableStateOf(selected.host) }
             var testStatus by remember { mutableStateOf<String?>(null) }
@@ -102,10 +114,11 @@ class MainActivity : ComponentActivity() {
                                 Button(
                                     onClick = {
                                         if (isOn) stopDns() else {
-                                            pendingDns = selected.address
-                                            pendingOption = selected
+                                            val effective = selected.copy(transport = transport, host = if (transport == "UDP") "" else dnsHost.trim())
+                                            pendingDns = effective.address
+                                            pendingOption = effective
                                             val prepare = VpnService.prepare(this@MainActivity)
-                                            if (prepare == null) startDns(selected) else vpnPermission.launch(prepare)
+                                            if (prepare == null) startDns(effective) else vpnPermission.launch(prepare)
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF20C9B0)),
@@ -127,7 +140,7 @@ class MainActivity : ComponentActivity() {
                         allOptions.forEach { option ->
                             Card(
                                 onClick = { if (!isOn) { selected = option; transport = option.transport; dnsHost = option.host; message = null } },
-                                colors = CardDefaults.cardColors(containerColor = if (selected.address == option.address) Color(0xFF24433F) else Color(0xFF1B2732)),
+                                colors = CardDefaults.cardColors(containerColor = if (selected.key == option.key) Color(0xFF24433F) else Color(0xFF1B2732)),
                                 shape = RoundedCornerShape(14.dp)
                             ) {
                                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -139,9 +152,9 @@ class MainActivity : ComponentActivity() {
                                     if (option.custom && !isOn) {
                                         Spacer(Modifier.width(8.dp))
                                         TextButton(onClick = {
-                                            customOptions = customOptions.filterNot { it.address == option.address }
-                                            prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map { "${it.name}|${it.address}|${it.transport}|${it.host}" }.toSet()).apply()
-                                            if (selected.address == option.address) selected = builtInOptions.first()
+                                            customOptions = customOptions.filterNot { it.key == option.key }
+                                            prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map(::encodeDnsOption).toSet()).apply()
+                                            if (selected.key == option.key) { selected = builtInOptions.first(); transport = selected.transport; dnsHost = selected.host }
                                             message = "DNS kustom dihapus."
                                         }) { Text("HAPUS", color = Color(0xFFFF8A80), fontSize = 10.sp) }
                                     }
@@ -191,11 +204,11 @@ class MainActivity : ComponentActivity() {
                                 when {
                                     !isValidIpv4(address) -> message = "Alamat tidak valid. Masukkan IPv4, misalnya 1.1.1.1."
                                     transport != "UDP" && !isValidHost(dnsHost.trim()) -> message = "Nama host DNS tidak valid."
-                                    allOptions.any { it.address == address } -> message = "Alamat DNS tersebut sudah tersedia."
+                                    allOptions.any { it.address == address && it.transport == transport && it.host == if (transport == "UDP") "" else dnsHost.trim() } -> message = "Profil dengan alamat dan protokol tersebut sudah tersedia."
                                     else -> {
                                         val added = DnsOption(name, address, "DNS kustom tersimpan", true, transport, if (transport == "UDP") "" else dnsHost.trim())
                                         customOptions = customOptions + added
-                                        prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map { "${it.name}|${it.address}" }.toSet()).apply()
+                                        prefs.edit().putStringSet(CUSTOM_DNS, customOptions.map(::encodeDnsOption).toSet()).apply()
                                         selected = added
                                         transport = added.transport
                                         dnsHost = added.host
@@ -265,19 +278,23 @@ class MainActivity : ComponentActivity() {
             putExtra(DnsVpnService.EXTRA_DNS, option.address)
             putExtra(DnsVpnService.EXTRA_MODE, option.transport)
             putExtra(DnsVpnService.EXTRA_HOST, option.host)
+            putExtra(DnsVpnService.EXTRA_PROFILE, option.key)
         }
         startService(intent)
-        connectionState = true
     }
 
-    private fun getSavedCustomOptions(): List<DnsOption> = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(CUSTOM_DNS, emptySet()).orEmpty().mapNotNull { entry ->
-        val p = entry.split("|", limit = 4)
-        if (p.size >= 2 && isValidIpv4(p[1])) DnsOption(p[0], p[1], "DNS tersimpan", true, p.getOrElse(2) { "UDP" }, p.getOrElse(3) { "" }) else null
+    private fun getSavedCustomOptions(): List<DnsOption> = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .getStringSet(CUSTOM_DNS, emptySet()).orEmpty().mapNotNull(::decodeDnsOption)
+
+    override fun onResume() {
+        super.onResume()
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        connectionState = prefs.getBoolean(DnsVpnService.KEY_RUNNING, false)
+        activeProfileKey = prefs.getString(DnsVpnService.KEY_ACTIVE_PROFILE, null)
     }
 
     private fun stopDns() {
         startService(Intent(this, DnsVpnService::class.java).setAction(DnsVpnService.ACTION_STOP))
-        connectionState = false
     }
 }
 
