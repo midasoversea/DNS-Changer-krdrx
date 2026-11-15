@@ -89,7 +89,8 @@ class MainActivity : ComponentActivity() {
             var selected by remember {
                 mutableStateOf((builtInOptions + initialCustom).firstOrNull { it.key == activeKey }
                     ?: (builtInOptions + initialCustom).firstOrNull { it.address == activeDns && it.transport == activeMode && it.host == activeHost }
-                    ?: builtInOptions.first())
+                    ?: if (activeDns != null) DnsOption(prefs.getString(DnsVpnService.KEY_ACTIVE_NAME, "DNS aktif") ?: "DNS aktif", activeDns, "Konfigurasi aktif", true, activeMode, activeHost)
+                    else builtInOptions.first())
             }
             var transport by remember { mutableStateOf(selected.transport) }
             var dnsHost by remember { mutableStateOf(selected.host) }
@@ -315,6 +316,7 @@ class MainActivity : ComponentActivity() {
             putExtra(DnsVpnService.EXTRA_MODE, option.transport)
             putExtra(DnsVpnService.EXTRA_HOST, option.host)
             putExtra(DnsVpnService.EXTRA_PROFILE, option.key)
+            putExtra(DnsVpnService.EXTRA_NAME, option.name)
         }
         startService(intent)
     }
