@@ -10,6 +10,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import kotlin.concurrent.thread
 import kotlin.system.measureTimeMillis
+import kotlinx.coroutines.delay
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -91,6 +92,15 @@ class MainActivity : ComponentActivity() {
             var message by remember { mutableStateOf<String?>(null) }
             val isOn = connectionState
             val allOptions = builtInOptions + customOptions
+
+            LaunchedEffect(Unit) {
+                while (true) {
+                    val state = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    connectionState = state.getBoolean(DnsVpnService.KEY_RUNNING, false)
+                    activeProfileKey = state.getString(DnsVpnService.KEY_ACTIVE_PROFILE, null)
+                    delay(700)
+                }
+            }
 
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = Color(0xFF20C9B0), background = Color(0xFF101820),
