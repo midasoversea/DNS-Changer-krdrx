@@ -31,7 +31,7 @@ class DnsVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
-            ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "", intent.getStringExtra(EXTRA_PROFILE) ?: "")
+            ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "", intent.getStringExtra(EXTRA_PROFILE) ?: "", intent.getStringExtra(EXTRA_NAME) ?: "DNS")
             else -> {
                 val p = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val saved = p.getString(KEY_ACTIVE_DNS, null)
@@ -41,12 +41,15 @@ class DnsVpnService : VpnService() {
         return START_STICKY
     }
 
-    private fun startVpn(dns: String, mode: String, host: String, profile: String) {
+    private fun startVpn(dns: String, mode: String, host: String, profile: String, name: String) {
         val token = ++sessionId
         running = false
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         try {
+            require(isValidIpv4Address(dns)) { "Alamat IPv4 DNS tidak valid" }
+            require(mode in setOf("UDP", "DoT", "DoH")) { "Protokol DNS tidak valid" }
+            require(mode == "UDP" || isValidDnsHost(host)) { "Host DoT/DoH tidak valid atau kosong" }
             startForeground(NOTIFICATION_ID, buildNotification(dns, mode))
             val bootstrap = InetAddress.getByName(dns)
             tun = Builder().setSession("DNS Changer").setMtu(1500).addAddress("10.111.0.1", 32)
@@ -54,7 +57,8 @@ class DnsVpnService : VpnService() {
                 ?: run { stopVpn(); return }
             running = true
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_ACTIVE_DNS, dns)
-                .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putString(KEY_ACTIVE_PROFILE, profile).putBoolean(KEY_RUNNING, true).apply()
+                .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putString(KEY_ACTIVE_PROFILE, profile)
+                .putString(KEY_ACTIVE_NAME, name).putBoolean(KEY_RUNNING, true).apply()
             thread(name = "dns-forwarder") {
                 val sessionTun = tun ?: return@thread
                 val fd = sessionTun.fileDescriptor
@@ -222,7 +226,7 @@ class DnsVpnService : VpnService() {
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false)
-            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).apply()
+            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).remove(KEY_ACTIVE_NAME).apply()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
         stopSelf()
     }
@@ -237,7 +241,7 @@ class DnsVpnService : VpnService() {
         try { tun?.close() } catch (_: Exception) { }
         tun = null
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false)
-            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).apply()
+            .remove(KEY_ACTIVE_DNS).remove(KEY_ACTIVE_MODE).remove(KEY_ACTIVE_HOST).remove(KEY_ACTIVE_PROFILE).remove(KEY_ACTIVE_NAME).apply()
         super.onDestroy()
     }
 
@@ -248,12 +252,29 @@ class DnsVpnService : VpnService() {
         const val EXTRA_MODE = "mode"
         const val EXTRA_HOST = "host"
         const val EXTRA_PROFILE = "profile"
+        const val EXTRA_NAME = "name"
         const val PREFS = "dns_profiles"
         const val KEY_ACTIVE_DNS = "active_dns"
         const val KEY_ACTIVE_MODE = "active_mode"
         const val KEY_ACTIVE_HOST = "active_host"
         const val KEY_ACTIVE_PROFILE = "active_profile"
+        const val KEY_ACTIVE_NAME = "active_name"
         const val KEY_RUNNING = "vpn_running"
         private const val NOTIFICATION_ID = 101
     }
 }
+
+private fun isValidIpv4Address(value: String): Boolean {
+    val parts = value.split(".")
+    return parts.size == 4 && parts.all { part ->
+        part.isNotEmpty() && part.all(Char::isDigit) &&
+            (part.length == 1 || !part.startsWith("0")) &&
+            part.toIntOrNull()?.let { it in 0..255 } == true
+    }
+}
+
+private fun isValidDnsHost(value: String): Boolean =
+    value.length in 1..253 && value.split(".").all { label ->
+        label.isNotEmpty() && label.length <= 63 && label.first() != '-' &&
+            label.last() != '-' && label.all { it.isLetterOrDigit() || it == '-' }
+    }
