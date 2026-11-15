@@ -49,7 +49,7 @@ class DnsVpnService : VpnService() {
             val bootstrap = InetAddress.getByName(dns)
             tun = Builder().setSession("DNS Changer").setMtu(1500).addAddress("10.111.0.1", 32)
                 .addDnsServer(bootstrap).addRoute(bootstrap, 32).establish()
-                ?: run { stopForeground(STOP_FOREGROUND_REMOVE); return }
+                ?: run { stopVpn(); return }
             running = true
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_ACTIVE_DNS, dns)
                 .putString(KEY_ACTIVE_MODE, mode).putString(KEY_ACTIVE_HOST, host).putString(KEY_ACTIVE_PROFILE, profile).putBoolean(KEY_RUNNING, true).apply()
