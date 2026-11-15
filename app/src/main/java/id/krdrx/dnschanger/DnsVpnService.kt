@@ -31,15 +31,6 @@ class DnsVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
-            ACTION_TEST -> {
-                runUpstreamTest(
-                    intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1",
-                    intent.getStringExtra(EXTRA_MODE) ?: "UDP",
-                    intent.getStringExtra(EXTRA_HOST) ?: "",
-                    intent.getLongExtra(EXTRA_TEST_ID, 0L)
-                )
-                return START_NOT_STICKY
-            }
             ACTION_START -> startVpn(intent.getStringExtra(EXTRA_DNS) ?: "1.1.1.1", intent.getStringExtra(EXTRA_MODE) ?: "UDP", intent.getStringExtra(EXTRA_HOST) ?: "", intent.getStringExtra(EXTRA_PROFILE) ?: "")
             else -> {
                 val p = getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -109,41 +100,6 @@ class DnsVpnService : VpnService() {
                 }
             }
         } catch (_: Exception) { stopVpn() }
-    }
-
-    private fun runUpstreamTest(dns: String, mode: String, host: String, requestId: Long) {
-        thread(name = "dns-upstream-test") {
-            val result = try {
-                val query = testQuery()
-                val server = InetAddress.getByName(dns)
-                val response = when (mode) {
-                    "DoT" -> queryTls(server, host, query)
-                    "DoH" -> queryHttps(server, host, query)
-                    else -> queryUdp(server, query)
-                }
-                if (response.size < 12 || response[0] != query[0] || response[1] != query[1] ||
-                    (response[2].toInt() and 0x80) == 0 || (response[3].toInt() and 0x0f) != 0) {
-                    error("Respons DNS tidak valid atau mengandung error")
-                }
-                "BERHASIL: server $mode merespons melalui socket VPN-terproteksi."
-            } catch (e: Exception) {
-                "GAGAL: ${e.message ?: "Server DNS tidak merespons"}"
-            }
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_TEST_RESULT, result).putLong(KEY_TEST_ID, requestId).apply()
-        }
-    }
-
-    private fun testQuery(): ByteArray {
-        val out = ByteArrayOutputStream()
-        out.write(byteArrayOf(0x4b, 0x52, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-        "example.com".split(".").forEach { label ->
-            val bytes = label.toByteArray(Charsets.US_ASCII)
-            out.write(bytes.size); out.write(bytes)
-        }
-        out.write(0)
-        out.write(byteArrayOf(0x00, 0x01, 0x00, 0x01))
-        return out.toByteArray()
     }
 
     private fun queryUdp(server: InetAddress, query: ByteArray): ByteArray {
@@ -288,20 +244,16 @@ class DnsVpnService : VpnService() {
     companion object {
         const val ACTION_START = "id.krdrx.dnschanger.START"
         const val ACTION_STOP = "id.krdrx.dnschanger.STOP"
-        const val ACTION_TEST = "id.krdrx.dnschanger.TEST"
         const val EXTRA_DNS = "dns"
         const val EXTRA_MODE = "mode"
         const val EXTRA_HOST = "host"
         const val EXTRA_PROFILE = "profile"
-        const val EXTRA_TEST_ID = "test_id"
         const val PREFS = "dns_profiles"
         const val KEY_ACTIVE_DNS = "active_dns"
         const val KEY_ACTIVE_MODE = "active_mode"
         const val KEY_ACTIVE_HOST = "active_host"
         const val KEY_ACTIVE_PROFILE = "active_profile"
         const val KEY_RUNNING = "vpn_running"
-        const val KEY_TEST_RESULT = "test_result"
-        const val KEY_TEST_ID = "test_id"
         private const val NOTIFICATION_ID = 101
     }
 }
